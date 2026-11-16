@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  macet-finance-bot:
+    build: .
+    container_name: macet_finance_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Lưu trữ database bền vững ra thư mục máy chủ để không mất dữ liệu khi update code hoặc restart container
+      - ./finance_bot.db:/app/finance_bot.db
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
