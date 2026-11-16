@@ -1,0 +1,24 @@
+name: Render 24/7 Keep Alive
+
+on:
+  schedule:
+    # Chạy tự động mỗi 10 phút liên tục 24/7 trên Cloud của GitHub
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Macet Finance Bot Health Check
+        run: |
+          echo "Bắt đầu ping máy chủ Render..."
+          for i in {1..2}; do
+            echo "Ping lần $i lúc: $(date)"
+            RESPONSE=$(curl -sS --max-time 20 https://macet-finance-bot.onrender.com/health || echo "Failed")
+            echo "Phản hồi: $RESPONSE"
+            if [ $i -lt 2 ]; then
+              sleep 300
+            fi
+          done
+          echo "Hoàn thành chu kỳ giữ máy chủ luôn thức!"
