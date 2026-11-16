@@ -460,12 +460,13 @@ async def start_health_server():
                 if not header or header == b"\r\n":
                     break
             body = b'{"status": "ok", "app": "Macet Finance Research Bot", "version": "2.0"}\n'
-            response = (
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: application/json\r\n"
+            header = (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: application/json\r\n"
                 f"Content-Length: {len(body)}\r\n"
-                b"Connection: close\r\n\r\n"
-            ) + body
+                f"Connection: close\r\n\r\n"
+            ).encode("utf-8")
+            response = header + body
             writer.write(response)
             await writer.drain()
         except Exception:
