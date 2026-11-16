@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+from aiohttp import web
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types, F
@@ -451,37 +452,24 @@ async def automated_scheduler_loop(bot_instance: Bot):
 # HTTP Server siêu nhẹ phục vụ Health Check cho các nền tảng Cloud (Render, Koyeb, v.v.)
 async def start_health_server():
     port = int(os.getenv("PORT", "8080"))
-    
-    async def handle_http(reader, writer):
-        try:
-            line = await reader.readline()
-            while True:
-                header = await reader.readline()
-                if not header or header == b"\r\n":
-                    break
-            body = b'{"status": "ok", "app": "Macet Finance Research Bot", "version": "2.0"}\n'
-            header = (
-                f"HTTP/1.1 200 OK\r\n"
-                f"Content-Type: application/json\r\n"
-                f"Content-Length: {len(body)}\r\n"
-                f"Connection: close\r\n\r\n"
-            ).encode("utf-8")
-            response = header + body
-            writer.write(response)
-            await writer.drain()
-        except Exception:
-            pass
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-
     try:
-        server = await asyncio.start_server(handle_http, "0.0.0.0", port)
+        app = web.Application()
+        async def health_handler(request):
+            return web.json_response({
+                "status": "ok",
+                "app": "Macet Finance Research Bot",
+                "version": "2.0",
+                "server_time": datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            })
+        app.router.add_get("/", health_handler)
+        app.router.add_get("/health", health_handler)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
         logger.info(f"Health check HTTP Server đang chạy trên cổng {port} (Sẵn sàng cho Cloud Web Service)...")
-        return server
+        return runner
     except Exception as e:
         logger.warning(f"Không thể khởi tạo HTTP Server trên cổng {port}: {e}")
         return None
