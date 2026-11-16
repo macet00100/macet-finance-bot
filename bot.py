@@ -469,6 +469,19 @@ async def start_health_server():
         app.router.add_get("/", health_handler)
         app.router.add_get("/health", health_handler)
 
+        async def reset_handler(request):
+            import reset_portfolio
+            import seed_priorities
+            reset_portfolio.reset_entire_database()
+            seed_priorities.seed_macro_sectors()
+            news_broadcaster.seed_existing_news()
+            return web.json_response({
+                "status": "success",
+                "message": "Đã reset quỹ về 1 tỷ tiền mặt nguyên vẹn và seed ngành ưu tiên!",
+                "time": datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            })
+        app.router.add_get("/reset", reset_handler)
+
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", port)
@@ -484,6 +497,11 @@ async def main():
     db.init_db()
     portfolio_manager.init_portfolio_db()
     
+    # Tự động nạp nhóm ngành ưu tiên vĩ mô ban đầu nếu database mới tạo
+    if not db.get_active_priority_sectors():
+        import seed_priorities
+        seed_priorities.seed_macro_sectors()
+
     # Nạp danh sách tin tức cũ hiện có để không đăng dồn dập khi vừa khởi động bot
     news_broadcaster.seed_existing_news()
     
