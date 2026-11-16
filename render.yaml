@@ -5,6 +5,7 @@ services:
     region: singapore
     plan: free
     branch: main
+    autoDeploy: true
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     healthCheckPath: /health
