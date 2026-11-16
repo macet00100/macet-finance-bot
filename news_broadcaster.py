@@ -249,18 +249,35 @@ async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
                 try:
                     if img_bytes:
                         photo = BufferedInputFile(img_bytes, filename="news_thumb.jpg")
-                        root_msg = await bot.send_photo(
-                            chat_id=config.TELEGRAM_CHANNEL_ID,
-                            photo=photo,
-                            caption=caption_root,
-                            parse_mode=ParseMode.MARKDOWN
-                        )
+                        try:
+                            root_msg = await bot.send_photo(
+                                chat_id=config.TELEGRAM_CHANNEL_ID,
+                                photo=photo,
+                                caption=caption_root,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        except Exception as e_c_md:
+                            logger.warning(f"Lỗi markdown caption ({e_c_md}), gửi bằng plain text...")
+                            root_msg = await bot.send_photo(
+                                chat_id=config.TELEGRAM_CHANNEL_ID,
+                                photo=photo,
+                                caption=caption_root,
+                                parse_mode=None
+                            )
                     else:
-                        root_msg = await bot.send_message(
-                            chat_id=config.TELEGRAM_CHANNEL_ID,
-                            text=caption_root,
-                            parse_mode=ParseMode.MARKDOWN
-                        )
+                        try:
+                            root_msg = await bot.send_message(
+                                chat_id=config.TELEGRAM_CHANNEL_ID,
+                                text=caption_root,
+                                parse_mode=ParseMode.MARKDOWN
+                            )
+                        except Exception as e_t_md:
+                            logger.warning(f"Lỗi markdown text ({e_t_md}), gửi bằng plain text...")
+                            root_msg = await bot.send_message(
+                                chat_id=config.TELEGRAM_CHANNEL_ID,
+                                text=caption_root,
+                                parse_mode=None
+                            )
 
                     orig_id = root_msg.message_id
                     log_target = f"Tâm điểm #{leader_ticker}" if leader_ticker else f"Đa ngành ({sectors_display})"
@@ -275,13 +292,35 @@ async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
                         "──────────────────\n"
                         f"📢 **Macet Finance Research**"
                     )
-                    await bot.send_message(
-                        chat_id=config.TELEGRAM_CHANNEL_ID,
-                        text=msg_part2,
-                        parse_mode=ParseMode.MARKDOWN,
-                        reply_parameters=ReplyParameters(message_id=orig_id)
-                    )
-                    logger.info(f"Đã đăng đoạn 2 reply tin nhắn gốc {orig_id}")
+                    if len(msg_part2) > 4000:
+                        msg_part2 = msg_part2[:3990] + "..."
+
+                    try:
+                        await bot.send_message(
+                            chat_id=config.TELEGRAM_CHANNEL_ID,
+                            text=msg_part2,
+                            parse_mode=ParseMode.MARKDOWN,
+                            reply_parameters=ReplyParameters(message_id=orig_id)
+                        )
+                        logger.info(f"Đã đăng đoạn 2 reply tin nhắn gốc {orig_id}")
+                    except Exception as e_md:
+                        logger.warning(f"Lỗi gửi reply có markdown ({e_md}). Thử lại bằng plain text...")
+                        try:
+                            await bot.send_message(
+                                chat_id=config.TELEGRAM_CHANNEL_ID,
+                                text=msg_part2,
+                                parse_mode=None,
+                                reply_parameters=ReplyParameters(message_id=orig_id)
+                            )
+                            logger.info(f"Đã đăng đoạn 2 plain text reply tin nhắn gốc {orig_id}")
+                        except Exception as e_reply:
+                            logger.warning(f"Lỗi reply_parameters ({e_reply}). Gửi nối tiếp không reply...")
+                            await bot.send_message(
+                                chat_id=config.TELEGRAM_CHANNEL_ID,
+                                text=msg_part2,
+                                parse_mode=None
+                            )
+                            logger.info(f"Đã đăng đoạn 2 nối tiếp không reply")
 
                     # Đánh dấu đã đăng
                     db.mark_news_published(news_id, title)
