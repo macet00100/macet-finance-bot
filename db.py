@@ -1,4 +1,5 @@
 import sqlite3
+import re
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -70,12 +71,21 @@ def init_db():
         """)
         conn.commit()
 
-def is_news_published(news_id: str) -> bool:
-    """Kiểm tra tin tức đã được đăng lên kênh chưa"""
+def is_news_published(news_id: str, title: str = "") -> bool:
+    """Kiểm tra tin tức đã được đăng lên kênh chưa (theo cả URL và Tiêu đề bài viết)"""
     with get_connection() as conn:
         cursor = conn.cursor()
+        # 1. Kiểm tra theo news_id (URL bài viết)
         cursor.execute("SELECT 1 FROM published_news WHERE news_id = ?", (news_id,))
-        return cursor.fetchone() is not None
+        if cursor.fetchone() is not None:
+            return True
+        # 2. Kiểm tra theo tiêu đề (tránh trường hợp cùng 1 bài xuất hiện ở nhiều feed RSS khác URL)
+        if title:
+            clean_title = re.sub(r"\s+", " ", title).strip().lower()
+            cursor.execute("SELECT 1 FROM published_news WHERE LOWER(TRIM(title)) = ?", (clean_title,))
+            if cursor.fetchone() is not None:
+                return True
+        return False
 
 def mark_news_published(news_id: str, title: str):
     """Đánh dấu tin tức đã đăng"""

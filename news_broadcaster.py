@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
@@ -51,6 +52,23 @@ async def download_image_bytes(url: str) -> Optional[bytes]:
         logger.warning(f"Không thể tải ảnh từ {url}: {e}")
     return None
 
+def seed_existing_news():
+    """Đánh dấu tất cả tin tức hiện có trên RSS feeds là đã đọc khi bot khởi động lần đầu để chống đăng dồn dập tin cũ"""
+    total = 0
+    for feed_url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries:
+                news_id = entry.link
+                title = entry.title.strip()
+                if not db.is_news_published(news_id, title):
+                    db.mark_news_published(news_id, title)
+                    total += 1
+        except Exception as e:
+            logger.warning(f"Lỗi khi seed tin tức từ {feed_url}: {e}")
+    if total > 0:
+        logger.info(f"Đã seed {total} tin tức cũ vào cơ sở dữ liệu để chống đăng trùng lặp khi khởi động.")
+
 async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
     """
     Quét tin tức mới:
@@ -64,6 +82,7 @@ async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
     - Đoạn 2: Reply đoạn 1 với góc nhìn chuyên sâu + Dòng Quyết định + Dòng Tổng tài sản quỹ.
     """
     posted_count = 0
+    seen_in_batch = set()
     
     for feed_url in RSS_FEEDS:
         try:
@@ -73,8 +92,26 @@ async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
                 title = entry.title.strip()
                 img_url, clean_summary = extract_image_and_summary(entry)
 
-                if db.is_news_published(news_id):
+                # Chống lặp trong cùng 1 đợt quét giữa các feeds khác nhau
+                clean_t = title.strip().lower()
+                if clean_t in seen_in_batch or news_id in seen_in_batch:
                     continue
+                seen_in_batch.add(clean_t)
+                seen_in_batch.add(news_id)
+
+                # Kiểm tra cơ sở dữ liệu theo cả URL và Tiêu đề
+                if db.is_news_published(news_id, title):
+                    continue
+
+                # Lọc độ tươi mới: chỉ lấy tin trong vòng 2 tiếng gần nhất
+                if hasattr(entry, "published_parsed") and entry.published_parsed:
+                    try:
+                        entry_ts = time.mktime(entry.published_parsed)
+                        if (time.time() - entry_ts) > 7200:
+                            db.mark_news_published(news_id, title)
+                            continue
+                    except Exception:
+                        pass
 
                 logger.info(f"Phát hiện tin mới: {title}")
                 

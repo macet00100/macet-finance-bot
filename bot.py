@@ -1,4 +1,5 @@
 import os
+import time
 import asyncio
 import logging
 from aiohttp import web
@@ -416,6 +417,7 @@ async def handle_direct_text(message: types.Message):
 async def automated_scheduler_loop(bot_instance: Bot):
     logger.info("Tiến trình lập lịch tự động (Bản tin 8h sáng, Tổng kết 15h30 dạng ảnh & Quản trị danh mục) đã khởi động...")
     await asyncio.sleep(5)
+    last_news_check = 0.0
     while True:
         try:
             now = datetime.now(VIETNAM_TZ)
@@ -440,8 +442,11 @@ async def automated_scheduler_loop(bot_instance: Bot):
             # 4. Giám sát các mã đang nắm giữ: Tự động chốt lời / cắt lỗ kỷ luật
             await portfolio_monitor.check_portfolio_triggers(bot_instance)
 
-            # 5. Quét tin tức thời gian thực & Ra quyết định đầu tư
-            await news_broadcaster.check_and_broadcast_news(bot_instance, max_posts=1)
+            # 5. Quét tin tức thời gian thực & Ra quyết định đầu tư (Theo đúng tần suất AUTO_NEWS_INTERVAL_SECONDS, mặc định 300s = 5 phút)
+            now_ts = time.time()
+            if now_ts - last_news_check >= config.AUTO_NEWS_INTERVAL_SECONDS:
+                last_news_check = now_ts
+                await news_broadcaster.check_and_broadcast_news(bot_instance, max_posts=1)
 
         except Exception as e:
             logger.error(f"[Scheduler Loop] Lỗi: {e}")
@@ -478,6 +483,10 @@ async def main():
     logger.info(f"Macet Finance Bot đang khởi động với Kênh {config.TELEGRAM_CHANNEL_USERNAME}...")
     db.init_db()
     portfolio_manager.init_portfolio_db()
+    
+    # Nạp danh sách tin tức cũ hiện có để không đăng dồn dập khi vừa khởi động bot
+    news_broadcaster.seed_existing_news()
+    
     await bot.delete_webhook(drop_pending_updates=True)
     
     # Khởi chạy HTTP Health Check Server cho Cloud
