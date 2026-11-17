@@ -1,9 +1,19 @@
 import sqlite3
 import re
+import unicodedata
 from pathlib import Path
 from typing import List, Dict, Any
 
 DB_PATH = Path(__file__).resolve().parent / "finance_bot.db"
+
+def normalize_title(title: str) -> str:
+    """Chuẩn hóa tiêu đề bài viết: Unicode NFC, bỏ dấu câu, chữ thường, bỏ khoảng trắng thừa"""
+    if not title:
+        return ""
+    text = unicodedata.normalize("NFC", str(title))
+    text = text.lower()
+    text = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 def get_connection():
     return sqlite3.connect(DB_PATH)
@@ -18,9 +28,21 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 news_id TEXT UNIQUE,
                 title TEXT,
+                normalized_title TEXT,
                 published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Đảm bảo cột normalized_title tồn tại nếu bảng đã tạo từ trước
+        try:
+            cursor.execute("ALTER TABLE published_news ADD COLUMN normalized_title TEXT")
+        except sqlite3.OperationalError:
+            pass
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_published_news_norm ON published_news(normalized_title)")
+        
+        # Tự động chuẩn hóa các tiêu đề cũ trong database nếu chưa có normalized_title
+        rows_to_update = cursor.execute("SELECT id, title FROM published_news WHERE normalized_title IS NULL AND title IS NOT NULL").fetchall()
+        for r_id, r_title in rows_to_update:
+            cursor.execute("UPDATE published_news SET normalized_title = ? WHERE id = ?", (normalize_title(r_title), r_id))
         # Bảng lưu lịch sử bản tin vĩ mô đầu ngày (mỗi ngày 1 bản tin)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_macro_history (
@@ -72,29 +94,38 @@ def init_db():
         conn.commit()
 
 def is_news_published(news_id: str, title: str = "") -> bool:
-    """Kiểm tra tin tức đã được đăng lên kênh chưa (theo cả URL và Tiêu đề bài viết)"""
+    """Kiểm tra tin tức đã được đăng lên kênh chưa (theo cả URL và Tiêu đề đã chuẩn hóa Unicode/Bỏ dấu câu)"""
+    norm = normalize_title(title) if title else ""
     with get_connection() as conn:
         cursor = conn.cursor()
         # 1. Kiểm tra theo news_id (URL bài viết)
-        cursor.execute("SELECT 1 FROM published_news WHERE news_id = ?", (news_id,))
-        if cursor.fetchone() is not None:
-            return True
-        # 2. Kiểm tra theo tiêu đề (tránh trường hợp cùng 1 bài xuất hiện ở nhiều feed RSS khác URL)
-        if title:
-            clean_title = re.sub(r"\s+", " ", title).strip().lower()
-            cursor.execute("SELECT 1 FROM published_news WHERE LOWER(TRIM(title)) = ?", (clean_title,))
+        if news_id:
+            cursor.execute("SELECT 1 FROM published_news WHERE news_id = ?", (news_id.strip(),))
+            if cursor.fetchone() is not None:
+                return True
+        # 2. Kiểm tra theo tiêu đề đã chuẩn hóa triệt để
+        if norm:
+            cursor.execute("SELECT 1 FROM published_news WHERE normalized_title = ?", (norm,))
             if cursor.fetchone() is not None:
                 return True
         return False
 
 def mark_news_published(news_id: str, title: str):
-    """Đánh dấu tin tức đã đăng"""
+    """Đánh dấu tin tức đã đăng (lưu cả URL và Tiêu đề đã chuẩn hóa)"""
+    clean_id = news_id.strip() if news_id else None
+    clean_title = title.strip() if title else ""
+    norm = normalize_title(clean_title)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT OR IGNORE INTO published_news (news_id, title) VALUES (?, ?)",
-            (news_id, title)
+            "INSERT OR IGNORE INTO published_news (news_id, title, normalized_title) VALUES (?, ?, ?)",
+            (clean_id, clean_title, norm)
         )
+        if norm and clean_id:
+            cursor.execute(
+                "UPDATE published_news SET normalized_title = ? WHERE news_id = ? AND (normalized_title IS NULL OR normalized_title = '')",
+                (norm, clean_id)
+            )
         conn.commit()
 
 def is_macro_sent_today(date_str: str) -> bool:

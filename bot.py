@@ -416,8 +416,10 @@ async def handle_direct_text(message: types.Message):
 # Vòng lặp định kỳ (Bản tin 8h sáng, Tổng kết 15h30 dạng ảnh, Quét tin & Giám sát chốt lời/cắt lỗ)
 async def automated_scheduler_loop(bot_instance: Bot):
     logger.info("Tiến trình lập lịch tự động (Bản tin 8h sáng, Tổng kết 15h30 dạng ảnh & Quản trị danh mục) đã khởi động...")
-    await asyncio.sleep(5)
-    last_news_check = 0.0
+    # Chờ 30 giây đầu tiên để các tiến trình khởi tạo và seed tin tức hoàn tất
+    await asyncio.sleep(30)
+    # Khởi tạo mốc thời gian bằng hiện tại để vòng lặp không quét tin dồn dập ngay khi vừa boot
+    last_news_check = time.time()
     while True:
         try:
             now = datetime.now(VIETNAM_TZ)

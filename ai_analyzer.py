@@ -25,7 +25,7 @@ def call_gemini(prompt: str, timeout: float = 30.0) -> Optional[str]:
         ],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 1000
+            "maxOutputTokens": 2048
         }
     }
 
@@ -36,9 +36,16 @@ def call_gemini(prompt: str, timeout: float = 30.0) -> Optional[str]:
                 data = resp.json()
                 candidates = data.get("candidates", [])
                 if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
+                    cand = candidates[0]
+                    finish_reason = cand.get("finishReason", "")
+                    if finish_reason and finish_reason not in ["STOP"]:
+                        logger.warning(f"Gemini finishReason: {finish_reason}")
+                    parts = cand.get("content", {}).get("parts", [])
                     if parts:
-                        return parts[0].get("text", "").strip()
+                        text_res = parts[0].get("text", "").strip()
+                        if len(text_res) >= 40:
+                            return text_res
+                        logger.warning(f"Gemini trả về chuỗi quá ngắn ({len(text_res)} ký tự): '{text_res}'")
             else:
                 logger.error(f"Lỗi gọi API (Status {resp.status_code}): {resp.text[:300]}")
     except Exception as e:
@@ -180,7 +187,46 @@ HÃY TRẢ VỀ ĐẦU RA THEO ĐỊNH DẠNG:
 🎯 **Chiến lược hành động cho #{leader_ticker}:** [Khuyến nghị cụ thể: Vùng gom tích lũy / Canh chốt lời / Vùng hỗ trợ - kháng cự cần theo dõi]
 """
     res = call_gemini(prompt)
-    return res.strip() if res else ""
+    if not res or len(res) < 120 or "🧠" not in res:
+        logger.warning(f"Lần gọi 1 trả về không đạt chuẩn ({len(res) if res else 0} ký tự). Đang thử lại lần 2...")
+        res = call_gemini(prompt)
+
+    if not res or len(res) < 120 or "🧠" not in res:
+        logger.warning("Gemini không trả về kết quả đạt chuẩn sau 2 lần gọi. Sử dụng nhận định mẫu chuẩn định dạng...")
+        res = get_fallback_commentary(
+            title=title,
+            news_scope=news_scope,
+            sectors=sectors,
+            leader_ticker=leader_ticker,
+            leader_name=leader_name
+        )
+
+    return res.strip()
+
+def get_fallback_commentary(
+    title: str,
+    news_scope: str = "SPECIFIC",
+    sectors: Optional[List[str]] = None,
+    leader_ticker: Optional[str] = None,
+    leader_name: Optional[str] = None
+) -> str:
+    """Tạo nhận định chuyên sâu dự phòng chuẩn định dạng, tuyệt đối không bị đứt đoạn hay ngắn cụt"""
+    if news_scope == "MULTI_SECTOR" or not leader_ticker:
+        sectors_str = ", ".join(sectors) if sectors else "Đa ngành"
+        return (
+            "🧠 **Góc nhìn Macet Finance về diễn biến Vĩ mô:**\n"
+            f"• Thông tin '{title}' đang tạo tác động trực tiếp tới cơ cấu dòng tiền giữa các nhóm ngành trên thị trường, đặc biệt là nhóm {sectors_str}. Sự phân hóa sẽ thể hiện rõ nét qua khả năng hấp thụ chi phí và tăng trưởng doanh thu cốt lõi của từng doanh nghiệp.\n"
+            "• Tâm lý nhà đầu tư nhìn chung đang ở trạng thái thận trọng quan sát, thanh khoản duy trì mức trung bình. Động thái tái định vị dòng vốn lớn sẽ cần thêm tín hiệu từ khối ngoại và chính sách tiền tệ để xác lập xu hướng rõ ràng hơn.\n\n"
+            f"🎯 **Chiến lược theo dõi & Quản trị danh mục:** Ưu tiên đưa các đại diện đầu ngành thuộc {sectors_str} vào danh sách theo dõi (Watchlist). Tiếp tục kiên nhẫn quan sát phản ứng tại các vùng hỗ trợ kỹ thuật, chờ điểm cân bằng dòng tiền trước khi kích hoạt giải ngân mới."
+        )
+    else:
+        name_str = f" ({leader_name})" if leader_name else ""
+        return (
+            f"🧠 **Góc nhìn Macet Finance về #{leader_ticker}:**\n"
+            f"• Thông tin '{title}' trực tiếp tác động đến hoạt động sản xuất kinh doanh và triển vọng tăng trưởng của #{leader_ticker}{name_str}. Doanh nghiệp đầu ngành với nền tảng cơ bản vững chắc sẽ có khả năng thích ứng linh hoạt và củng cố vị thế thị phần trong giai đoạn tới.\n"
+            f"• Trên góc độ giao dịch, dòng tiền lớn đang có xu hướng tích lũy và kiểm định lực cung quanh các ngưỡng hỗ trợ then chốt. Trạng thái cung - cầu cơ bản giữ mức cân bằng, chờ đợi xung lực bứt phá khi thanh khoản thị trường chung cải thiện.\n\n"
+            f"🎯 **Chiến lược hành động cho #{leader_ticker}:** Duy trì chiến lược quản trị kỷ luật. Canh giải ngân thăm dò khi cổ phiếu điều chỉnh về các vùng hỗ trợ ngắn hạn tin cậy; tuân thủ nghiêm ngặt ngưỡng cắt lỗ nếu giá vi phạm hỗ trợ để bảo toàn nguồn vốn quỹ."
+        )
 
 def analyze_stock_with_ai(symbol: str, ta_data: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """

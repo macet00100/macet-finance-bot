@@ -20,6 +20,10 @@ import investment_engine
 
 logger = logging.getLogger(__name__)
 
+# Khóa chống xung đột và cache trong bộ nhớ để triệt tiêu mọi khả năng lặp tin
+_broadcast_lock = asyncio.Lock()
+_processing_titles = set()
+
 RSS_FEEDS = [
     "https://cafef.vn/thi-truong-chung-khoan.rss",
     "https://cafef.vn/doanh-nghiep.rss",
@@ -72,271 +76,258 @@ def seed_existing_news():
 async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
     """
     Quét tin tức mới:
-    - Nếu là tin VĨ MÔ / ĐA NGÀNH:
-      + Không quy về 1 mã đơn lẻ.
-      + Nêu các nhóm ngành và cổ phiếu tiêu biểu liên quan để đưa vào diện THEO DÕI.
-    - Nếu là tin tác động vào NGÀNH CỤ THỂ hoặc DOANH NGHIỆP CỤ THỂ:
-      + Chỉ đích danh mã cổ phiếu Leader chịu ảnh hưởng lớn nhất.
-      + Kéo dữ liệu giá & kỹ thuật thực tế để ra quyết định đầu tư (MUA/BÁN/THEO DÕI).
-    - Đoạn 1: Ảnh gốc + Tiêu đề gốc + Ngành & Cổ phiếu liên quan + Quyết định sơ bộ.
-    - Đoạn 2: Reply đoạn 1 với góc nhìn chuyên sâu + Dòng Quyết định + Dòng Tổng tài sản quỹ.
+    - Sử dụng _broadcast_lock chống chạy chồng chéo / chạy song song.
+    - Chuẩn hóa tiêu đề bài viết và kiểm tra chống trùng lặp đa tầng.
+    - Đánh dấu đã đăng NGAY LẬP TỨC khi tin gốc được gửi thành công lên Kênh Telegram.
+    - Đảm bảo Đoạn 2 (nhận định chuyên sâu) tuyệt đối không bị đứt đoạn hay ngắn cụt.
     """
-    posted_count = 0
-    seen_in_batch = set()
-    
-    for feed_url in RSS_FEEDS:
-        try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries:
-                news_id = entry.link
-                title = entry.title.strip()
-                img_url, clean_summary = extract_image_and_summary(entry)
+    if _broadcast_lock.locked():
+        logger.info("Tiến trình quét tin khác đang xử lý, tạm bỏ qua lượt này để chống trùng lặp.")
+        return 0
 
-                # Chống lặp trong cùng 1 đợt quét giữa các feeds khác nhau
-                clean_t = title.strip().lower()
-                if clean_t in seen_in_batch or news_id in seen_in_batch:
-                    continue
-                seen_in_batch.add(clean_t)
-                seen_in_batch.add(news_id)
+    async with _broadcast_lock:
+        posted_count = 0
+        seen_in_batch = set()
+        
+        for feed_url in RSS_FEEDS:
+            try:
+                feed = feedparser.parse(feed_url)
+                for entry in feed.entries:
+                    news_id = entry.link
+                    title = entry.title.strip()
+                    norm_title = db.normalize_title(title)
+                    img_url, clean_summary = extract_image_and_summary(entry)
 
-                # Kiểm tra cơ sở dữ liệu theo cả URL và Tiêu đề
-                if db.is_news_published(news_id, title):
-                    continue
+                    # Chống lặp trong cùng đợt quét & in-memory cache
+                    if norm_title in seen_in_batch or norm_title in _processing_titles or news_id in seen_in_batch:
+                        continue
+                    seen_in_batch.add(norm_title)
+                    seen_in_batch.add(news_id)
 
-                # Lọc độ tươi mới: chỉ lấy tin trong vòng 2 tiếng gần nhất
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    try:
-                        entry_ts = time.mktime(entry.published_parsed)
-                        if (time.time() - entry_ts) > 7200:
-                            db.mark_news_published(news_id, title)
-                            continue
-                    except Exception:
-                        pass
-
-                logger.info(f"Phát hiện tin mới: {title}")
-                
-                # 1. Phân tích tin tức & Phân loại phạm vi (MULTI_SECTOR vs SPECIFIC)
-                mapping = ai_analyzer.analyze_news_mapping(title, clean_summary)
-                if not mapping:
-                    logger.warning("Không thể map tin tức, bỏ qua.")
-                    continue
-
-                news_scope = mapping.get("news_scope", "SPECIFIC")
-                sectors = mapping.get("sectors", [])
-                if isinstance(sectors, str):
-                    sectors = [sectors]
-                raw_related = mapping.get("related_tickers", [])
-                related_str = " ".join([f"#{t.strip()}" for t in raw_related if t.strip()])
-                
-                leader_ticker = mapping.get("leader_ticker")
-                if leader_ticker:
-                    leader_ticker = str(leader_ticker).strip().upper()
-                leader_name = mapping.get("leader_name", "")
-                
-                impact = mapping.get("impact", "TRUNG LẬP ⚪")
-                magnitude = mapping.get("magnitude", "TRUNG BÌNH")
-                price_trend = mapping.get("price_trend", "Đi ngang / Phân hóa")
-
-                # Nguyên tắc: Nếu tin đa ngành vĩ mô, tuyệt đối không gán 1 mã leader đơn lẻ
-                if news_scope == "MULTI_SECTOR":
-                    leader_ticker = None
-                    leader_name = None
-
-                # ==============================================================
-                # BỘ LỌC QUẢN TRỊ DANH MỤC & DÒNG TIỀN (PORTFOLIO CAPACITY FILTER)
-                # ==============================================================
-                portfolio_summary = portfolio_manager.get_portfolio_summary()
-                curr_cash = portfolio_summary["cash_balance"]
-                curr_positions = portfolio_summary["positions"]
-                open_symbols = [p["symbol"].strip().upper() for p in curr_positions]
-                open_count = len(open_symbols)
-                max_positions = investment_engine.MAX_PORTFOLIO_POSITIONS
-
-                # Điều kiện còn room giải ngân để mở rộng tìm mã mới:
-                # Tiền mặt phải >= 50 triệu VÀ số mã đang nắm giữ chưa đạt tối đa
-                has_cash_room = (curr_cash >= 50_000_000)
-                has_slot_room = (open_count < max_positions)
-                can_expand_portfolio = has_cash_room and has_slot_room
-
-                # Nếu HẾT ROOM (Tiền mặt < 50 triệu HOẶC Đã phân bổ đủ mã):
-                # TẠM DỪNG ĐĂNG THÔNG TIN CÁC MÃ NGOÀI DANH MỤC!
-                # Chỉ đăng tin tức liên quan trực tiếp đến các mã ĐANG NẮM GIỮ trong danh mục.
-                if not can_expand_portfolio:
-                    is_holding_stock = False
-                    if leader_ticker and leader_ticker in open_symbols:
-                        is_holding_stock = True
-                    elif any(t.strip().upper() in open_symbols for t in raw_related):
-                        # Nếu trong danh sách liên quan có mã đang giữ, chuyển tâm điểm về mã đó
-                        matching_holding = next(t.strip().upper() for t in raw_related if t.strip().upper() in open_symbols)
-                        leader_ticker = matching_holding
-                        info = data_fetcher.get_symbol_info(matching_holding)
-                        leader_name = info.get("description", matching_holding) if info else matching_holding
-                        is_holding_stock = True
-
-                    if not is_holding_stock:
-                        reason_msg = f"Tiền mặt thấp ({curr_cash:,.0f} đ < 50 triệu)" if not has_cash_room else f"Đã đủ {open_count}/{max_positions} mã"
-                        target_disp = f"#{leader_ticker}" if leader_ticker else "ngoài danh mục"
-                        logger.info(f"Tạm dừng đăng tin {target_disp} vì không thuộc danh mục đang nắm giữ ({reason_msg}).")
-                        db.mark_news_published(news_id, title)
+                    # Kiểm tra cơ sở dữ liệu theo cả URL và Tiêu đề chuẩn hóa
+                    if db.is_news_published(news_id, title):
                         continue
 
-                # 2. Kéo dữ liệu kỹ thuật thực tế nếu có mã Leader cụ thể
-                ta_data = None
-                if leader_ticker and len(leader_ticker) == 3:
-                    df = data_fetcher.get_stock_history(leader_ticker, days=60)
-                    if df is not None and len(df) >= 20:
-                        ta_data = technical_analysis.analyze_stock(df)
-
-                # 3. Ra quyết định đầu tư cho quỹ vốn 1 tỷ
-                decision_line, assets_line = investment_engine.make_investment_decision(
-                    leader_ticker=leader_ticker,
-                    leader_name=leader_name,
-                    impact=impact,
-                    magnitude=magnitude,
-                    price_trend=price_trend,
-                    ta_data=ta_data,
-                    news_scope=news_scope,
-                    sectors=sectors,
-                    related_tickers=raw_related
-                )
-
-                # 4. Viết nhận định chuyên sâu
-                commentary = ai_analyzer.generate_integrated_commentary(
-                    title=title,
-                    summary=clean_summary,
-                    news_scope=news_scope,
-                    sectors=sectors,
-                    related_tickers=raw_related,
-                    leader_ticker=leader_ticker,
-                    leader_name=leader_name,
-                    impact=impact,
-                    magnitude=magnitude,
-                    ta_data=ta_data
-                )
-
-                # Tải ảnh minh họa bài báo
-                img_bytes = await download_image_bytes(img_url)
-
-                # 5. ĐOẠN GỐC
-                sectors_display = ", ".join(sectors) if sectors else "Thị trường chung"
-                if news_scope == "MULTI_SECTOR" or not leader_ticker:
-                    caption_root = (
-                        "⚡ **BẢN TIN VĨ MÔ THỊ TRƯỜNG | MACET FINANCE**\n\n"
-                        f"📌 **Tin mới:** {title}\n\n"
-                        f"🌐 **Phạm vi tác động:** Vĩ mô / Đa ngành\n"
-                        f"🏢 **Các nhóm ngành ảnh hưởng:** {sectors_display}\n"
-                        f"🔍 **Cổ phiếu tiêu biểu trong diện theo dõi:** {related_str}\n"
-                        f"⚖️ **Đánh giá tác động:** {impact}\n"
-                        f"💥 **Mức độ ảnh hưởng:** {magnitude}\n\n"
-                        f"{decision_line}"
-                    )
-                else:
-                    caption_root = (
-                        "⚡ **BẢN TIN DOANH NGHIỆP & NGÀNH | MACET FINANCE**\n\n"
-                        f"📌 **Tin mới:** {title}\n\n"
-                        f"🏢 **Ngành & Cổ phiếu liên quan:** #{sectors_display} {related_str}\n"
-                        f"🎯 **Tâm điểm ảnh hưởng lớn nhất:** **#{leader_ticker}** ({leader_name})\n"
-                        f"⚖️ **Đánh giá tác động:** {impact}\n"
-                        f"💥 **Mức độ ảnh hưởng:** {magnitude}\n"
-                        f"📈 **Dự báo xu hướng #{leader_ticker}:** {price_trend}\n\n"
-                        f"{decision_line}"
-                    )
-
-                # Đảm bảo caption không vượt 1024 ký tự
-                if len(caption_root) > 1000:
-                    caption_root = caption_root[:995] + "..."
-
-                try:
-                    if img_bytes:
-                        photo = BufferedInputFile(img_bytes, filename="news_thumb.jpg")
+                    # Lọc độ tươi mới: chỉ lấy tin trong vòng 2 tiếng gần nhất
+                    if hasattr(entry, "published_parsed") and entry.published_parsed:
                         try:
-                            root_msg = await bot.send_photo(
-                                chat_id=config.TELEGRAM_CHANNEL_ID,
-                                photo=photo,
-                                caption=caption_root,
-                                parse_mode=ParseMode.MARKDOWN
-                            )
-                        except Exception as e_c_md:
-                            logger.warning(f"Lỗi markdown caption ({e_c_md}), gửi bằng plain text...")
-                            root_msg = await bot.send_photo(
-                                chat_id=config.TELEGRAM_CHANNEL_ID,
-                                photo=photo,
-                                caption=caption_root,
-                                parse_mode=None
-                            )
+                            entry_ts = time.mktime(entry.published_parsed)
+                            if (time.time() - entry_ts) > 7200:
+                                db.mark_news_published(news_id, title)
+                                continue
+                        except Exception:
+                            pass
+
+                    # Khóa tạm thời tiêu đề này trong bộ nhớ để chặn hoàn toàn mọi luồng khác
+                    _processing_titles.add(norm_title)
+
+                    logger.info(f"Phát hiện tin mới: {title}")
+                    
+                    # 1. Phân tích tin tức & Phân loại phạm vi (MULTI_SECTOR vs SPECIFIC)
+                    mapping = ai_analyzer.analyze_news_mapping(title, clean_summary)
+                    if not mapping:
+                        logger.warning("Không thể map tin tức, bỏ qua.")
+                        continue
+
+                    news_scope = mapping.get("news_scope", "SPECIFIC")
+                    sectors = mapping.get("sectors", [])
+                    if isinstance(sectors, str):
+                        sectors = [sectors]
+                    raw_related = mapping.get("related_tickers", [])
+                    related_str = " ".join([f"#{t.strip()}" for t in raw_related if t.strip()])
+                    
+                    leader_ticker = mapping.get("leader_ticker")
+                    if leader_ticker:
+                        leader_ticker = str(leader_ticker).strip().upper()
+                    leader_name = mapping.get("leader_name", "")
+                    
+                    impact = mapping.get("impact", "TRUNG LẬP ⚪")
+                    magnitude = mapping.get("magnitude", "TRUNG BÌNH")
+                    price_trend = mapping.get("price_trend", "Đi ngang / Phân hóa")
+
+                    # Nguyên tắc: Nếu tin đa ngành vĩ mô, tuyệt đối không gán 1 mã leader đơn lẻ
+                    if news_scope == "MULTI_SECTOR":
+                        leader_ticker = None
+                        leader_name = None
+
+                    # BỘ LỌC QUẢN TRỊ DANH MỤC & DÒNG TIỀN (PORTFOLIO CAPACITY FILTER)
+                    portfolio_summary = portfolio_manager.get_portfolio_summary()
+                    curr_cash = portfolio_summary["cash_balance"]
+                    curr_positions = portfolio_summary["positions"]
+                    open_symbols = [p["symbol"].strip().upper() for p in curr_positions]
+                    open_count = len(open_symbols)
+
+                    # 2. Thu thập dữ liệu kỹ thuật thực tế nếu có Leader đơn lẻ
+                    ta_data = None
+                    if leader_ticker:
+                        df = data_fetcher.get_stock_history(leader_ticker, days=120)
+                        if df is not None and len(df) >= 20:
+                            ta_data = technical_analysis.analyze_stock(df)
+
+                    # 3. Ra quyết định đầu tư cho quỹ vốn 1 tỷ
+                    decision_line, assets_line = investment_engine.make_investment_decision(
+                        leader_ticker=leader_ticker,
+                        leader_name=leader_name,
+                        impact=impact,
+                        magnitude=magnitude,
+                        price_trend=price_trend,
+                        ta_data=ta_data,
+                        news_scope=news_scope,
+                        sectors=sectors,
+                        related_tickers=raw_related
+                    )
+
+                    # 4. Viết nhận định chuyên sâu
+                    commentary = ai_analyzer.generate_integrated_commentary(
+                        title=title,
+                        summary=clean_summary,
+                        news_scope=news_scope,
+                        sectors=sectors,
+                        related_tickers=raw_related,
+                        leader_ticker=leader_ticker,
+                        leader_name=leader_name,
+                        impact=impact,
+                        magnitude=magnitude,
+                        ta_data=ta_data
+                    )
+
+                    # Tải ảnh minh họa bài báo
+                    img_bytes = await download_image_bytes(img_url)
+
+                    # 5. ĐOẠN GỐC
+                    sectors_display = ", ".join(sectors) if sectors else "Thị trường chung"
+                    if news_scope == "MULTI_SECTOR" or not leader_ticker:
+                        caption_root = (
+                            "⚡ **BẢN TIN VĨ MÔ THỊ TRƯỜNG | MACET FINANCE**\n\n"
+                            f"📌 **Tin mới:** {title}\n\n"
+                            f"🌐 **Phạm vi tác động:** Vĩ mô / Đa ngành\n"
+                            f"🏢 **Các nhóm ngành ảnh hưởng:** {sectors_display}\n"
+                            f"🔍 **Cổ phiếu tiêu biểu trong diện theo dõi:** {related_str}\n"
+                            f"⚖️ **Đánh giá tác động:** {impact}\n"
+                            f"💥 **Mức độ ảnh hưởng:** {magnitude}\n\n"
+                            f"{decision_line}"
+                        )
                     else:
-                        try:
-                            root_msg = await bot.send_message(
-                                chat_id=config.TELEGRAM_CHANNEL_ID,
-                                text=caption_root,
-                                parse_mode=ParseMode.MARKDOWN
-                            )
-                        except Exception as e_t_md:
-                            logger.warning(f"Lỗi markdown text ({e_t_md}), gửi bằng plain text...")
-                            root_msg = await bot.send_message(
-                                chat_id=config.TELEGRAM_CHANNEL_ID,
-                                text=caption_root,
-                                parse_mode=None
-                            )
+                        caption_root = (
+                            "⚡ **BẢN TIN DOANH NGHIỆP & NGÀNH | MACET FINANCE**\n\n"
+                            f"📌 **Tin mới:** {title}\n\n"
+                            f"🏢 **Ngành & Cổ phiếu liên quan:** #{sectors_display} {related_str}\n"
+                            f"🎯 **Tâm điểm ảnh hưởng lớn nhất:** **#{leader_ticker}** ({leader_name})\n"
+                            f"⚖️ **Đánh giá tác động:** {impact}\n"
+                            f"💥 **Mức độ ảnh hưởng:** {magnitude}\n"
+                            f"📈 **Dự báo xu hướng #{leader_ticker}:** {price_trend}\n\n"
+                            f"{decision_line}"
+                        )
 
-                    orig_id = root_msg.message_id
-                    log_target = f"Tâm điểm #{leader_ticker}" if leader_ticker else f"Đa ngành ({sectors_display})"
-                    logger.info(f"Đã đăng tin gốc kèm ảnh (ID {orig_id}): {title} [{log_target}]")
-
-                    # 6. ĐOẠN THỨ 2: Reply lại tin nhắn gốc kèm Phân tích chuyên sâu + 2 dòng Quyết định & Tổng tài sản
-                    await asyncio.sleep(2)
-                    msg_part2 = (
-                        f"{commentary}\n\n"
-                        f"{decision_line}\n"
-                        f"{assets_line}\n\n"
-                        "──────────────────\n"
-                        f"📢 **Macet Finance Research**"
-                    )
-                    if len(msg_part2) > 4000:
-                        msg_part2 = msg_part2[:3990] + "..."
+                    # Đảm bảo caption không vượt 1024 ký tự
+                    if len(caption_root) > 1000:
+                        caption_root = caption_root[:995] + "..."
 
                     try:
-                        await bot.send_message(
-                            chat_id=config.TELEGRAM_CHANNEL_ID,
-                            text=msg_part2,
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_parameters=ReplyParameters(message_id=orig_id)
+                        if img_bytes:
+                            photo = BufferedInputFile(img_bytes, filename="news_thumb.jpg")
+                            try:
+                                root_msg = await bot.send_photo(
+                                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                                    photo=photo,
+                                    caption=caption_root,
+                                    parse_mode=ParseMode.MARKDOWN
+                                )
+                            except Exception as e_c_md:
+                                logger.warning(f"Lỗi markdown caption ({e_c_md}), gửi bằng plain text...")
+                                root_msg = await bot.send_photo(
+                                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                                    photo=photo,
+                                    caption=caption_root,
+                                    parse_mode=None
+                                )
+                        else:
+                            try:
+                                root_msg = await bot.send_message(
+                                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                                    text=caption_root,
+                                    parse_mode=ParseMode.MARKDOWN
+                                )
+                            except Exception as e_t_md:
+                                logger.warning(f"Lỗi markdown text ({e_t_md}), gửi bằng plain text...")
+                                root_msg = await bot.send_message(
+                                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                                    text=caption_root,
+                                    parse_mode=None
+                                )
+
+                        orig_id = root_msg.message_id
+                        log_target = f"Tâm điểm #{leader_ticker}" if leader_ticker else f"Đa ngành ({sectors_display})"
+                        logger.info(f"Đã đăng tin gốc kèm ảnh (ID {orig_id}): {title} [{log_target}]")
+
+                        # ĐÁNH DẤU ĐÃ ĐĂNG NGAY LẬP TỨC: Ngay khi tin gốc lên kênh thành công
+                        db.mark_news_published(news_id, title)
+                        posted_count += 1
+
+                        # 6. ĐOẠN THỨ 2: Reply lại tin nhắn gốc kèm Phân tích chuyên sâu + 2 dòng Quyết định & Tổng tài sản
+                        # Kiểm tra và đảm bảo commentary không bao giờ bị đứt đoạn hoặc quá ngắn cụt
+                        if not commentary or len(commentary.strip()) < 80 or "🧠" not in commentary:
+                            logger.warning(f"Commentary không đạt chuẩn ({len(commentary.strip()) if commentary else 0} ký tự), kích hoạt fallback chuyên sâu...")
+                            commentary = ai_analyzer.get_fallback_commentary(
+                                title=title,
+                                news_scope=news_scope,
+                                sectors=sectors,
+                                leader_ticker=leader_ticker,
+                                leader_name=leader_name
+                            )
+
+                        await asyncio.sleep(2)
+                        msg_part2 = (
+                            f"{commentary}\n\n"
+                            f"{decision_line}\n"
+                            f"{assets_line}\n\n"
+                            "──────────────────\n"
+                            f"📢 **Macet Finance Research**"
                         )
-                        logger.info(f"Đã đăng đoạn 2 reply tin nhắn gốc {orig_id}")
-                    except Exception as e_md:
-                        logger.warning(f"Lỗi gửi reply có markdown ({e_md}). Thử lại bằng plain text...")
+                        if len(msg_part2) > 4000:
+                            msg_part2 = msg_part2[:3990] + "..."
+
                         try:
                             await bot.send_message(
                                 chat_id=config.TELEGRAM_CHANNEL_ID,
                                 text=msg_part2,
-                                parse_mode=None,
+                                parse_mode=ParseMode.MARKDOWN,
                                 reply_parameters=ReplyParameters(message_id=orig_id)
                             )
-                            logger.info(f"Đã đăng đoạn 2 plain text reply tin nhắn gốc {orig_id}")
-                        except Exception as e_reply:
-                            logger.warning(f"Lỗi reply_parameters ({e_reply}). Gửi nối tiếp không reply...")
-                            await bot.send_message(
-                                chat_id=config.TELEGRAM_CHANNEL_ID,
-                                text=msg_part2,
-                                parse_mode=None
-                            )
-                            logger.info(f"Đã đăng đoạn 2 nối tiếp không reply")
+                            logger.info(f"Đã đăng đoạn 2 reply tin nhắn gốc {orig_id}")
+                        except Exception as e_md:
+                            logger.warning(f"Lỗi gửi reply có markdown ({e_md}). Thử lại bằng plain text...")
+                            try:
+                                await bot.send_message(
+                                    chat_id=config.TELEGRAM_CHANNEL_ID,
+                                    text=msg_part2,
+                                    parse_mode=None,
+                                    reply_parameters=ReplyParameters(message_id=orig_id)
+                                )
+                                logger.info(f"Đã đăng đoạn 2 plain text reply tin nhắn gốc {orig_id}")
+                            except Exception as e_reply:
+                                logger.warning(f"Lỗi reply_parameters ({e_reply}). Gửi nối tiếp không reply...")
+                                try:
+                                    await bot.send_message(
+                                        chat_id=config.TELEGRAM_CHANNEL_ID,
+                                        text=msg_part2,
+                                        parse_mode=None
+                                    )
+                                    logger.info(f"Đã đăng đoạn 2 nối tiếp không reply")
+                                except Exception as e_final:
+                                    logger.error(f"Không thể gửi đoạn 2: {e_final}")
 
-                    # Đánh dấu đã đăng
-                    db.mark_news_published(news_id, title)
-                    posted_count += 1
+                        await asyncio.sleep(5)
+                        if posted_count >= max_posts:
+                            return posted_count
 
-                    await asyncio.sleep(5)
-                    if posted_count >= max_posts:
-                        return posted_count
+                    except Exception as e:
+                        logger.error(f"Lỗi khi gửi bài lên kênh Telegram: {e}")
 
-                except Exception as e:
-                    logger.error(f"Lỗi khi gửi bài lên kênh Telegram: {e}")
+            except Exception as e:
+                logger.error(f"Lỗi khi đọc feed {feed_url}: {e}")
 
-        except Exception as e:
-            logger.error(f"Lỗi khi đọc feed {feed_url}: {e}")
-
-    return posted_count
+        return posted_count
 
 async def broadcast_stock_analysis(bot: Bot, symbol: str) -> bool:
     """
