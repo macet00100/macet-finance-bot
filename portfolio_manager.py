@@ -123,6 +123,16 @@ def get_open_positions() -> List[Dict[str, Any]]:
         cursor.execute("SELECT * FROM portfolio_positions WHERE status = 'OPEN'")
         return [dict(row) for row in cursor.fetchall()]
 
+def get_open_position_by_symbol(symbol: str) -> Optional[Dict[str, Any]]:
+    """Lấy trực tiếp thông tin vị thế mở của 1 mã cổ phiếu từ DB"""
+    symbol = symbol.strip().upper()
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM portfolio_positions WHERE UPPER(TRIM(symbol)) = ? AND status = 'OPEN'", (symbol,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
 def get_portfolio_summary() -> Dict[str, Any]:
     """
     Tính toán tổng quan danh mục:
@@ -200,6 +210,21 @@ def buy_stock(
     if cash < 10_000_000:
         logger.warning(f"Tiền mặt không đủ để giải ngân ({cash:,.0f} VNĐ)")
         return None
+
+    # BẢO VỆ CHỐNG TRÙNG VỊ THẾ: Nếu mã này đã mở vị thế trong danh mục, tự động chuyển sang MUA THÊM (Scale-in)
+    with get_connection() as conn:
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        c.execute("SELECT id FROM portfolio_positions WHERE UPPER(TRIM(symbol)) = ? AND status = 'OPEN'", (symbol,))
+        existing = c.fetchone()
+        if existing:
+            logger.info(f"Mã #{symbol} đã có vị thế mở trong danh mục (ID {existing['id']}). Tự động chuyển sang MUA THÊM thay vì Mua mới.")
+            return buy_more_stock(
+                symbol=symbol,
+                target_amount_vnd=target_amount_vnd,
+                current_price=current_price,
+                note=f"{note} (Tự động chuyển sang Mua thêm gia tăng)"
+            )
 
     invest_amount = min(target_amount_vnd, cash)
     price_vnd = current_price * 1000.0

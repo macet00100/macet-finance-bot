@@ -71,8 +71,17 @@ async def check_portfolio_triggers(bot: Bot) -> int:
                         parse_mode=ParseMode.MARKDOWN
                     )
                     logger.info(f"Đã phát sóng thông báo CHỐT LÃI #{sym} lên kênh")
-                except Exception as e:
-                    logger.error(f"Lỗi gửi thông báo chốt lãi #{sym}: {e}")
+                except Exception as e_md:
+                    logger.warning(f"Lỗi gửi thông báo chốt lãi #{sym} dạng Markdown: {e_md}. Đang thử lại text thuần...")
+                    try:
+                        clean_plain = msg.replace("**", "").replace("`", "")
+                        await bot.send_message(
+                            chat_id=config.TELEGRAM_CHANNEL_ID,
+                            text=clean_plain
+                        )
+                        logger.info(f"Đã phát sóng thông báo CHỐT LÃI #{sym} dạng plain text thành công")
+                    except Exception as e_final:
+                        logger.error(f"Lỗi nghiêm trọng khi gửi thông báo chốt lãi #{sym}: {e_final}")
 
         # 2. Kích hoạt Cắt lỗ
         elif sl_price and current_price <= sl_price:
@@ -98,7 +107,16 @@ async def check_portfolio_triggers(bot: Bot) -> int:
                         parse_mode=ParseMode.MARKDOWN
                     )
                     logger.info(f"Đã phát sóng thông báo CẮT LỖ #{sym} lên kênh")
-                except Exception as e:
-                    logger.error(f"Lỗi gửi thông báo cắt lỗ #{sym}: {e}")
+                except Exception as e_md:
+                    logger.warning(f"Lỗi gửi thông báo cắt lỗ #{sym} dạng Markdown: {e_md}. Đang thử lại text thuần...")
+                    try:
+                        clean_plain = msg.replace("**", "").replace("`", "")
+                        await bot.send_message(
+                            chat_id=config.TELEGRAM_CHANNEL_ID,
+                            text=clean_plain
+                        )
+                        logger.info(f"Đã phát sóng thông báo CẮT LỖ #{sym} dạng plain text thành công")
+                    except Exception as e_final:
+                        logger.error(f"Lỗi nghiêm trọng khi gửi thông báo cắt lỗ #{sym}: {e_final}")
 
     return triggered_count

@@ -66,7 +66,32 @@ def make_investment_decision(
         return decision_line, assets_line
 
     leader_ticker = leader_ticker.strip().upper()
-    holding_pos = next((p for p in positions if p["symbol"] == leader_ticker), None)
+    holding_pos = next((p for p in positions if p["symbol"].strip().upper() == leader_ticker), None)
+    if not holding_pos:
+        # Kiểm tra trực tiếp từ DB phòng trường hợp danh mục chi tiết chưa đồng bộ kịp
+        db_pos = portfolio_manager.get_open_position_by_symbol(leader_ticker)
+        if db_pos:
+            holding_pos = {
+                "id": db_pos["id"],
+                "symbol": db_pos["symbol"].strip().upper(),
+                "shares": db_pos["shares"],
+                "buy_price": db_pos["buy_price"],
+                "current_price": ta_data.get("last_close", db_pos["buy_price"]) if ta_data else db_pos["buy_price"],
+                "cost_basis": db_pos["cost_basis"],
+                "current_value": db_pos["shares"] * (ta_data.get("last_close", db_pos["buy_price"]) if ta_data else db_pos["buy_price"]) * 1000.0,
+                "pnl_amount": (db_pos["shares"] * (ta_data.get("last_close", db_pos["buy_price"]) if ta_data else db_pos["buy_price"]) * 1000.0) - db_pos["cost_basis"],
+                "pnl_pct": (((db_pos["shares"] * (ta_data.get("last_close", db_pos["buy_price"]) if ta_data else db_pos["buy_price"]) * 1000.0) - db_pos["cost_basis"]) / db_pos["cost_basis"]) * 100.0 if db_pos["cost_basis"] > 0 else 0.0,
+                "take_profit_price": db_pos["take_profit_price"],
+                "take_profit_pct": db_pos["take_profit_pct"],
+                "stop_loss_price": db_pos["stop_loss_price"],
+                "stop_loss_pct": db_pos["stop_loss_pct"],
+                "sector": db_pos["sector"] if ("sector" in db_pos.keys()) else "",
+                "buy_date": db_pos["buy_date"]
+            }
+
+    # Kiểm tra xem mã này đã có trong hàng đợi LỆNH CHỜ (Pending Orders) chưa
+    pending_orders = db.get_pending_orders()
+    pending_for_sym = next((o for o in pending_orders if o["symbol"].strip().upper() == leader_ticker), None)
 
     current_price = ta_data.get("last_close", 0) if ta_data else 0
     rsi = ta_data.get("rsi", 50) if ta_data else 50
@@ -225,6 +250,20 @@ def make_investment_decision(
     # =========================================================================
     # TRƯỜNG HỢP 2: CHƯA NẮM GIỮ MÃ NÀY (XÉT MUA MỚI ĐA DẠNG HÓA VÀ ƯU TIÊN VĨ MÔ)
     # =========================================================================
+
+    # 0. Kiểm tra nếu mã này đã có lệnh chờ giải ngân trong hàng đợi
+    if pending_for_sym:
+        plan_action = "MUA MỚI" if pending_for_sym["action"] == "BUY" else "MUA THÊM"
+        decision_line = (
+            f"💼 **Quyết định (Chờ mở phiên):** ĐÃ CÓ KẾ HOẠCH {plan_action} **#{leader_ticker}** - "
+            f"Hệ thống đã lưu lệnh chờ khớp `{pending_for_sym['target_amount']:,.0f} VNĐ` khi sàn mở cửa ({next_session_desc}). "
+            f"Giữ nguyên kế hoạch giải ngân đã duyệt, tiếp tục theo dõi."
+        )
+        assets_line = (
+            f"💰 **Tổng tài sản:** `{summary['total_assets']:,.0f} VNĐ` "
+            f"(Tiền mặt: `{summary['cash_balance']:,.0f} VNĐ` | Cổ phiếu: `{summary['stock_value']:,.0f} VNĐ`)"
+        )
+        return decision_line, assets_line
 
     # 1. Kiểm tra trần số lượng mã cổ phiếu toàn danh mục (tối đa 15 mã)
     if open_count >= MAX_PORTFOLIO_POSITIONS:
