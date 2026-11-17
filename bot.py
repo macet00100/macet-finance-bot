@@ -472,17 +472,27 @@ async def start_health_server():
         app.router.add_get("/health", health_handler)
 
         async def reset_handler(request):
-            import reset_portfolio
             import seed_priorities
-            reset_portfolio.reset_entire_database()
             seed_priorities.seed_macro_sectors()
             news_broadcaster.seed_existing_news()
             return web.json_response({
                 "status": "success",
-                "message": "Đã reset quỹ về 1 tỷ tiền mặt nguyên vẹn và seed ngành ưu tiên!",
+                "message": "Đã seed lại tin tức và ngành ưu tiên thành công (bảo toàn nguyên vẹn danh mục)!",
                 "time": datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
             })
         app.router.add_get("/reset", reset_handler)
+
+        async def restore_portfolio_handler(request):
+            import restore_portfolio_data
+            res = restore_portfolio_data.restore_15_positions()
+            return web.json_response({
+                "status": "success",
+                "message": "Đã khôi phục thành công 15 vị thế cổ phiếu và số dư tiền mặt 168.405.000 VNĐ!",
+                "data": res,
+                "time": datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            })
+        app.router.add_get("/restore_portfolio", restore_portfolio_handler)
+        app.router.add_post("/restore_portfolio", restore_portfolio_handler)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -503,6 +513,12 @@ async def main():
     if not db.get_active_priority_sectors():
         import seed_priorities
         seed_priorities.seed_macro_sectors()
+
+    # Tự động khôi phục 15 vị thế cổ phiếu nếu database mới khởi tạo (chống mất vị thế khi Render restart)
+    if not portfolio_manager.get_open_positions():
+        import restore_portfolio_data
+        logger.info("Phát hiện danh mục trống khi khởi động. Tự động khôi phục 15 vị thế cổ phiếu thực tế...")
+        restore_portfolio_data.restore_15_positions()
 
     # Nạp danh sách tin tức cũ hiện có để không đăng dồn dập khi vừa khởi động bot
     news_broadcaster.seed_existing_news()
