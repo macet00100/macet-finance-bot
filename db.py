@@ -94,7 +94,7 @@ def init_db():
         conn.commit()
 
 def is_news_published(news_id: str, title: str = "") -> bool:
-    """Kiểm tra tin tức đã được đăng lên kênh chưa (theo cả URL và Tiêu đề đã chuẩn hóa Unicode/Bỏ dấu câu)"""
+    """Kiểm tra tin tức đã được đăng lên kênh chưa (theo URL, Tiêu đề chuẩn hóa, và Độ tương đồng từ khóa >= 75%)"""
     norm = normalize_title(title) if title else ""
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -108,6 +108,23 @@ def is_news_published(news_id: str, title: str = "") -> bool:
             cursor.execute("SELECT 1 FROM published_news WHERE normalized_title = ?", (norm,))
             if cursor.fetchone() is not None:
                 return True
+
+            # 3. Kiểm tra độ tương đồng mờ (Fuzzy Similarity >= 75%) với các tin đăng gần đây
+            # Ngăn chặn báo chí đổi nhẹ vài từ trong tít (VD: 'Chuyện chưa kể' thành 'Chuyện chưa từng kể')
+            words_a = set(norm.split())
+            if len(words_a) >= 5:
+                cursor.execute("SELECT normalized_title FROM published_news ORDER BY id DESC LIMIT 150")
+                recent_titles = cursor.fetchall()
+                for (past_norm,) in recent_titles:
+                    if not past_norm:
+                        continue
+                    words_b = set(past_norm.split())
+                    if not words_b:
+                        continue
+                    inter = len(words_a & words_b)
+                    similarity = inter / max(len(words_a), len(words_b))
+                    if similarity >= 0.75:
+                        return True
         return False
 
 def mark_news_published(news_id: str, title: str):

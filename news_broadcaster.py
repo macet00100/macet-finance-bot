@@ -8,6 +8,7 @@ from typing import Optional, Tuple, List
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, ReplyParameters
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 
 import config
 import db
@@ -224,21 +225,21 @@ async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
                         caption_root = caption_root[:995] + "..."
 
                     try:
+                        clean_plain_caption = caption_root.replace("**", "").replace("`", "")
                         if img_bytes:
-                            photo = BufferedInputFile(img_bytes, filename="news_thumb.jpg")
                             try:
                                 root_msg = await bot.send_photo(
                                     chat_id=config.TELEGRAM_CHANNEL_ID,
-                                    photo=photo,
+                                    photo=BufferedInputFile(img_bytes, filename="news_thumb.jpg"),
                                     caption=caption_root,
                                     parse_mode=ParseMode.MARKDOWN
                                 )
-                            except Exception as e_c_md:
-                                logger.warning(f"Lỗi markdown caption ({e_c_md}), gửi bằng plain text...")
+                            except TelegramBadRequest as e_c_md:
+                                logger.warning(f"Lỗi cú pháp markdown caption ({e_c_md}), gửi bằng plain text...")
                                 root_msg = await bot.send_photo(
                                     chat_id=config.TELEGRAM_CHANNEL_ID,
-                                    photo=photo,
-                                    caption=caption_root,
+                                    photo=BufferedInputFile(img_bytes, filename="news_thumb.jpg"),
+                                    caption=clean_plain_caption,
                                     parse_mode=None
                                 )
                         else:
@@ -248,11 +249,11 @@ async def check_and_broadcast_news(bot: Bot, max_posts: int = 1) -> int:
                                     text=caption_root,
                                     parse_mode=ParseMode.MARKDOWN
                                 )
-                            except Exception as e_t_md:
-                                logger.warning(f"Lỗi markdown text ({e_t_md}), gửi bằng plain text...")
+                            except TelegramBadRequest as e_t_md:
+                                logger.warning(f"Lỗi cú pháp markdown text ({e_t_md}), gửi bằng plain text...")
                                 root_msg = await bot.send_message(
                                     chat_id=config.TELEGRAM_CHANNEL_ID,
-                                    text=caption_root,
+                                    text=clean_plain_caption,
                                     parse_mode=None
                                 )
 

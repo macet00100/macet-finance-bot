@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, ReplyParameters
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 
 import config
 import db
@@ -69,7 +70,9 @@ TIN TỨC BỐI CẢNH VĨ MÔ GẦN NHẤT:
 QUY TẮC BẮT BUỘC:
 - TUYỆT ĐỐI KHÔNG dùng từ "AI", "trí tuệ nhân tạo", "mô hình", "tự động".
 - Viết bằng văn phong sắc sảo, tự tin, chuyên nghiệp của bản tin chiến lược đầu ngày từ các định chế tài chính lớn.
+- BẮT BUỘC BẮT ĐẦU NGAY bằng "🌐 **Bối cảnh Vĩ mô & Quốc tế:**". TUYỆT ĐỐI KHÔNG mở đầu bằng lời chào hỏi (Chào quý nhà đầu tư, Kính gửi...).
 - BẮT BUỘC phân tách kết quả thành 2 phần bằng dấu `===SPLIT===`:
+- PHẦN 1 viết súc tích, cô đọng (tối đa 500 ký tự) để vừa vặn khung ảnh Telegram.
 
 PHẦN 1 (Bối cảnh vĩ mô & Kịch bản VN-Index hôm nay):
 🌐 **Bối cảnh Vĩ mô & Quốc tế:**
@@ -108,9 +111,29 @@ PHẦN 2 (Nhóm ngành ưu tiên vĩ mô & Chiến lược giải ngân đầu p
         parts = raw_text.split("===SPLIT===")
         part1 = parts[0].strip()
         part2 = parts[1].strip()
+    elif "⭐ **DANH MỤC" in raw_text:
+        parts = raw_text.split("⭐ **DANH MỤC")
+        part1 = parts[0].strip()
+        part2 = "⭐ **DANH MỤC" + parts[1]
+    elif "🏢 **GÓC NHÌN" in raw_text:
+        parts = raw_text.split("🏢 **GÓC NHÌN")
+        part1 = parts[0].strip()
+        part2 = "🏢 **GÓC NHÌN" + parts[1]
     else:
-        part1 = raw_text.strip()
-        part2 = ""
+        part1 = raw_text[:800].strip()
+        part2 = raw_text[800:].strip()
+
+    # Tái cân bằng nếu part1 quá ngắn do AI chèn lời chào trước SPLIT
+    if len(part1) < 180 and len(part2) > 200:
+        combined = part1 + "\n\n" + part2
+        if "⭐ **DANH MỤC" in combined:
+            s = combined.split("⭐ **DANH MỤC")
+            part1 = s[0].strip()
+            part2 = "⭐ **DANH MỤC" + s[1]
+        elif "🏢 **GÓC NHÌN" in combined:
+            s = combined.split("🏢 **GÓC NHÌN")
+            part1 = s[0].strip()
+            part2 = "🏢 **GÓC NHÌN" + s[1]
 
     return chart_buf, part1, part2
 
@@ -158,14 +181,28 @@ async def broadcast_morning_macro(bot: Bot, force: bool = False) -> bool:
         f"{part1}"
     )
 
+    if len(caption_root) > 1000:
+        caption_root = caption_root[:995] + "..."
+
+    clean_plain_caption = caption_root.replace("**", "").replace("`", "")
+
     try:
         photo = BufferedInputFile(chart_buf.getvalue(), filename="vnindex_morning.png")
-        root_msg = await bot.send_photo(
-            chat_id=config.TELEGRAM_CHANNEL_ID,
-            photo=photo,
-            caption=caption_root,
-            parse_mode=ParseMode.MARKDOWN
-        )
+        try:
+            root_msg = await bot.send_photo(
+                chat_id=config.TELEGRAM_CHANNEL_ID,
+                photo=photo,
+                caption=caption_root,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except TelegramBadRequest as e_cap:
+            logger.warning(f"Lỗi markdown caption macro ({e_cap}), gửi bằng plain text...")
+            root_msg = await bot.send_photo(
+                chat_id=config.TELEGRAM_CHANNEL_ID,
+                photo=BufferedInputFile(chart_buf.getvalue(), filename="vnindex_morning.png"),
+                caption=clean_plain_caption,
+                parse_mode=None
+            )
         orig_id = root_msg.message_id
         logger.info(f"Đã đăng bản tin vĩ mô gốc ID {orig_id} lên kênh")
 
@@ -177,12 +214,35 @@ async def broadcast_morning_macro(bot: Bot, force: bool = False) -> bool:
                 "──────────────────\n"
                 f"📢 **Macet Finance Research** | Chúc quý nhà đầu tư phiên giao dịch hiệu quả!"
             )
-            await bot.send_message(
-                chat_id=config.TELEGRAM_CHANNEL_ID,
-                text=msg_part2,
-                parse_mode=ParseMode.MARKDOWN,
-                reply_parameters=ReplyParameters(message_id=orig_id)
-            )
+            # Chia nhỏ nếu vượt quá giới hạn 4000 ký tự của Telegram
+            chunks = []
+            while len(msg_part2) > 4000:
+                split_idx = msg_part2[:4000].rfind("\n")
+                if split_idx == -1:
+                    split_idx = 4000
+                chunks.append(msg_part2[:split_idx])
+                msg_part2 = msg_part2[split_idx:].strip()
+            if msg_part2:
+                chunks.append(msg_part2)
+
+            for chunk in chunks:
+                clean_chunk = chunk.replace("**", "").replace("`", "")
+                try:
+                    await bot.send_message(
+                        chat_id=config.TELEGRAM_CHANNEL_ID,
+                        text=chunk,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_parameters=ReplyParameters(message_id=orig_id)
+                    )
+                except TelegramBadRequest as e_p2:
+                    logger.warning(f"Lỗi markdown part2 macro ({e_p2}), gửi bằng plain text...")
+                    await bot.send_message(
+                        chat_id=config.TELEGRAM_CHANNEL_ID,
+                        text=clean_chunk,
+                        parse_mode=None,
+                        reply_parameters=ReplyParameters(message_id=orig_id)
+                    )
+                await asyncio.sleep(1)
             logger.info(f"Đã gửi đoạn 2 (Nhóm ngành & Chiến lược) reply tin gốc {orig_id}")
 
         # Ghi nhận đã gửi bản tin cho ngày hôm nay
