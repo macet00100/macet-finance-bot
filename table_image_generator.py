@@ -106,14 +106,15 @@ def render_portfolio_table_image(summary: Dict[str, Any], date_display: str) -> 
 
     col_weights = [
         ("MÃ CK", 0.08),
-        ("SỐ LƯỢNG", 0.09),
-        ("GIÁ MUA", 0.09),
-        ("THỊ GIÁ", 0.09),
-        ("GIÁ TRỊ (VNĐ)", 0.16),
-        ("% TÀI SẢN", 0.09),
-        ("LÃI / LỖ (VNĐ)", 0.16),
-        ("TỶ SUẤT", 0.09),
-        ("MỤC TIÊU (TP/SL)", 0.15)
+        ("TRẠNG THÁI", 0.10),
+        ("SỐ LƯỢNG", 0.08),
+        ("GIÁ MUA", 0.08),
+        ("THỊ GIÁ", 0.08),
+        ("GIÁ TRỊ (VNĐ)", 0.15),
+        ("% VỐN", 0.07),
+        ("LÃI / LỖ (VNĐ)", 0.15),
+        ("TỶ SUẤT", 0.08),
+        ("TP / SL", 0.13)
     ]
     total_weight = sum(w for _, w in col_weights)
     
@@ -186,20 +187,26 @@ def render_portfolio_table_image(summary: Dict[str, Any], date_display: str) -> 
             tp_p = pos.get("take_profit_price", 0)
             sl_p = pos.get("stop_loss_price", 0)
 
+            # Chu kỳ T+2.5
+            is_avail = pos.get("is_available", True)
+            t_label = "Khả dụng" if is_avail else pos.get("t_badge", "Chờ về")
+            t_color = "#10b981" if is_avail else "#f59e0b"
+
             pnl_color = "#10b981" if pnl_amt >= 0 else "#ef4444"
             sign = "+" if pnl_amt >= 0 else ""
 
             text_y_norm = norm_y(row_bottom_inch + row_h / 2.0)
 
             ax.text(norm_x(col_defs[0]["x_center"]), text_y_norm, f"#{sym}", color="#60a5fa", fontsize=11, fontweight="bold", ha="center", va="center")
-            ax.text(norm_x(col_defs[1]["x_center"]), text_y_norm, f"{shares:,}", color="#e2e8f0", fontsize=10.5, ha="center", va="center")
-            ax.text(norm_x(col_defs[2]["x_center"]), text_y_norm, f"{buy_price:,.2f}", color="#94a3b8", fontsize=10.5, ha="center", va="center")
-            ax.text(norm_x(col_defs[3]["x_center"]), text_y_norm, f"{curr_price:,.2f}", color="#ffffff", fontsize=10.5, fontweight="bold", ha="center", va="center")
-            ax.text(norm_x(col_defs[4]["x_center"]), text_y_norm, f"{curr_val:,.0f} đ", color="#f1f5f9", fontsize=10.5, ha="center", va="center")
-            ax.text(norm_x(col_defs[5]["x_center"]), text_y_norm, f"{alloc_pct:.1f}%", color="#38bdf8", fontsize=10.5, fontweight="bold", ha="center", va="center")
-            ax.text(norm_x(col_defs[6]["x_center"]), text_y_norm, f"{sign}{pnl_amt:,.0f} đ", color=pnl_color, fontsize=10.5, fontweight="bold", ha="center", va="center")
-            ax.text(norm_x(col_defs[7]["x_center"]), text_y_norm, f"{sign}{pnl_p:.2f}%", color=pnl_color, fontsize=10.5, fontweight="bold", ha="center", va="center")
-            ax.text(norm_x(col_defs[8]["x_center"]), text_y_norm, f"{tp_p:,.1f} / {sl_p:,.1f}", color="#c084fc", fontsize=10, fontweight="bold", ha="center", va="center")
+            ax.text(norm_x(col_defs[1]["x_center"]), text_y_norm, t_label, color=t_color, fontsize=10, fontweight="bold", ha="center", va="center")
+            ax.text(norm_x(col_defs[2]["x_center"]), text_y_norm, f"{shares:,}", color="#e2e8f0", fontsize=10.5, ha="center", va="center")
+            ax.text(norm_x(col_defs[3]["x_center"]), text_y_norm, f"{buy_price:,.2f}", color="#94a3b8", fontsize=10.5, ha="center", va="center")
+            ax.text(norm_x(col_defs[4]["x_center"]), text_y_norm, f"{curr_price:,.2f}", color="#ffffff", fontsize=10.5, fontweight="bold", ha="center", va="center")
+            ax.text(norm_x(col_defs[5]["x_center"]), text_y_norm, f"{curr_val:,.0f} đ", color="#f1f5f9", fontsize=10.5, ha="center", va="center")
+            ax.text(norm_x(col_defs[6]["x_center"]), text_y_norm, f"{alloc_pct:.1f}%", color="#38bdf8", fontsize=10.5, fontweight="bold", ha="center", va="center")
+            ax.text(norm_x(col_defs[7]["x_center"]), text_y_norm, f"{sign}{pnl_amt:,.0f} đ", color=pnl_color, fontsize=10.5, fontweight="bold", ha="center", va="center")
+            ax.text(norm_x(col_defs[8]["x_center"]), text_y_norm, f"{sign}{pnl_p:.2f}%", color=pnl_color, fontsize=10.5, fontweight="bold", ha="center", va="center")
+            ax.text(norm_x(col_defs[9]["x_center"]), text_y_norm, f"{tp_p:,.1f} / {sl_p:,.1f}", color="#c084fc", fontsize=10, fontweight="bold", ha="center", va="center")
 
         # Đường kẻ dọc phân chia cột
         for col in col_defs[:-1]:

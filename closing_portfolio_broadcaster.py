@@ -50,6 +50,10 @@ def generate_closing_portfolio_assets() -> Optional[Tuple[io.BytesIO, str]]:
     icon_pnl = "🟢" if pnl_total >= 0 else "🔴"
     sign_pnl = "+" if pnl_total >= 0 else ""
 
+    avail_count = summary.get("available_count", len(positions))
+    locked_count = summary.get("locked_count", 0)
+    t_status_desc = f"Khả dụng giao dịch: `{avail_count}` mã | Đang chờ về: `{locked_count}` mã" if len(positions) > 0 else "100% Tiền mặt"
+
     caption = (
         "📊 **BẢNG TỔNG KẾT DANH MỤC ĐẦU TƯ CUỐI PHIÊN | MACET FINANCE**\n"
         f"📅 *{date_display}*\n\n"
@@ -57,8 +61,9 @@ def generate_closing_portfolio_assets() -> Optional[Tuple[io.BytesIO, str]]:
         f"💰 **Tổng tài sản hiện tại:** `{total_assets:,.0f} VNĐ`\n"
         f"{icon_pnl} **Tổng lãi/lỗ:** `{sign_pnl}{pnl_total:,.0f} VNĐ` (`{sign_pnl}{pnl_pct:.2f}%`)\n"
         f"💵 **Tiền mặt:** `{cash:,.0f} VNĐ` ({(cash/total_assets)*100:.1f}%) | "
-        f"📦 **Cổ phiếu:** `{stock_val:,.0f} VNĐ` ({(stock_val/total_assets)*100:.1f}%)\n\n"
-        "📌 *Chi tiết từng mã, số lượng, tỷ trọng % tài sản, lãi/lỗ và ngưỡng TP/SL được tổng hợp trực quan trong ảnh bảng biểu phía trên.*\n\n"
+        f"📦 **Cổ phiếu:** `{stock_val:,.0f} VNĐ` ({(stock_val/total_assets)*100:.1f}%)\n"
+        f"⏳ **Quy chế T+2.5:** {t_status_desc}\n\n"
+        "📌 *Chi tiết từng mã, trạng thái T+, số lượng, tỷ trọng % tài sản, lãi/lỗ và ngưỡng TP/SL được tổng hợp trực quan trong ảnh bảng biểu phía trên.*\n\n"
         "──────────────────\n"
         f"📢 **Macet Finance Research** | Báo cáo danh mục định kỳ 15:30 mỗi ngày giao dịch."
     )

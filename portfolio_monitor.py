@@ -47,6 +47,21 @@ async def check_portfolio_triggers(bot: Bot) -> int:
 
         current_price = float(df["Close"].iloc[-1])
 
+        # KIỂM TRA CHU KỲ T+2.5: Cổ phiếu phải về tài khoản (chiều T+2 từ 13:00) mới kích hoạt bán
+        t_info = holiday_checker.calculate_t_plus_status(pos.get("buy_date", ""))
+        if not t_info["is_available"]:
+            if tp_price and current_price >= tp_price:
+                logger.info(
+                    f"Mã #{sym} chạm điểm Chốt lãi ({current_price:,.2f} >= {tp_price:,.2f}), "
+                    f"nhưng chưa đủ chu kỳ T+2.5 ({t_info['status_label']}). Khả dụng: {t_info['settlement_desc']}. Giữ vị thế theo quy chế sàn."
+                )
+            elif sl_price and current_price <= sl_price:
+                logger.info(
+                    f"Mã #{sym} chạm điểm Cắt lỗ ({current_price:,.2f} <= {sl_price:,.2f}), "
+                    f"nhưng chưa đủ chu kỳ T+2.5 ({t_info['status_label']}). Khả dụng: {t_info['settlement_desc']}. Chờ cổ phiếu về tài khoản theo quy chế sàn."
+                )
+            continue
+
         # 1. Kích hoạt Chốt lãi
         if tp_price and current_price >= tp_price:
             sell_res = portfolio_manager.sell_stock(pos_id, current_price, reason="CHỐT LÃI MỤC TIÊU")

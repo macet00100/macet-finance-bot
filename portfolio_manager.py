@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from zoneinfo import ZoneInfo
 import data_fetcher
+import holiday_checker
 
 logger = logging.getLogger(__name__)
 VIETNAM_TZ = ZoneInfo("Asia/Bangkok")
@@ -162,6 +163,9 @@ def get_portfolio_summary() -> Dict[str, Any]:
         pnl_val = current_val - cost
         pnl_pct = (pnl_val / cost) * 100.0 if cost > 0 else 0.0
 
+        t_info = holiday_checker.calculate_t_plus_status(pos.get("buy_date", ""))
+        is_avail = t_info["is_available"]
+
         detailed_positions.append({
             "id": pos["id"],
             "symbol": sym,
@@ -177,12 +181,25 @@ def get_portfolio_summary() -> Dict[str, Any]:
             "stop_loss_price": pos["stop_loss_price"],
             "stop_loss_pct": pos["stop_loss_pct"],
             "sector": pos["sector"] if ("sector" in pos.keys()) else "",
-            "buy_date": pos["buy_date"]
+            "buy_date": pos["buy_date"],
+            # Thông tin chu kỳ T+2.5 của TTCK Việt Nam
+            "is_available": is_avail,
+            "t_days": t_info["t_days"],
+            "t_status": t_info["status_label"],
+            "t_badge": t_info["badge"],
+            "settlement_desc": t_info["settlement_desc"],
+            "available_shares": shares if is_avail else 0,
+            "locked_shares": 0 if is_avail else shares
         })
 
     total_assets = cash + total_stock_value
     pnl_total = total_assets - INITIAL_CAPITAL
     pnl_total_pct = (pnl_total / INITIAL_CAPITAL) * 100.0
+
+    available_stock_val = sum(p["current_value"] for p in detailed_positions if p["is_available"])
+    locked_stock_val = sum(p["current_value"] for p in detailed_positions if not p["is_available"])
+    available_count = sum(1 for p in detailed_positions if p["is_available"])
+    locked_count = sum(1 for p in detailed_positions if not p["is_available"])
 
     return {
         "initial_capital": INITIAL_CAPITAL,
@@ -192,7 +209,11 @@ def get_portfolio_summary() -> Dict[str, Any]:
         "pnl_total": pnl_total,
         "pnl_total_pct": pnl_total_pct,
         "positions": detailed_positions,
-        "open_count": len(detailed_positions)
+        "open_count": len(detailed_positions),
+        "available_stock_val": available_stock_val,
+        "locked_stock_val": locked_stock_val,
+        "available_count": available_count,
+        "locked_count": locked_count
     }
 
 def buy_stock(
@@ -240,7 +261,7 @@ def buy_stock(
 
     tp_price = round(current_price * (1 + tp_pct / 100.0), 2)
     sl_price = round(current_price * (1 - sl_pct / 100.0), 2)
-    now_str = datetime.now(VIETNAM_TZ).strftime("%d/%m/%Y %H:%M")
+    now_str = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -372,6 +393,15 @@ def sell_partial_stock(
     if not pos:
         return None
 
+    # KIỂM TRA CHU KỲ T+2.5 CỦA TTCK VIỆT NAM: Cổ phiếu phải về tài khoản mới được bán
+    t_info = holiday_checker.calculate_t_plus_status(pos["buy_date"])
+    if not t_info["is_available"]:
+        logger.warning(
+            f"TỪ CHỐI BÁN BỚT #{symbol}: Cổ phiếu chưa đủ chu kỳ T+2.5 ({t_info['status_label']}). "
+            f"Thời điểm khả dụng: {t_info['settlement_desc']}"
+        )
+        return None
+
     old_shares = pos["shares"]
     old_cost = pos["cost_basis"]
     
@@ -433,6 +463,15 @@ def sell_stock(position_id: int, current_price: float, reason: str = "TAKE_PROFI
         if not pos:
             return None
 
+        # KIỂM TRA CHU KỲ T+2.5 CỦA TTCK VIỆT NAM: Cổ phiếu phải về tài khoản mới được bán
+        t_info = holiday_checker.calculate_t_plus_status(pos["buy_date"])
+        if not t_info["is_available"]:
+            logger.warning(
+                f"TỪ CHỐI BÁN #{pos['symbol']} (ID {position_id}): Cổ phiếu chưa đủ chu kỳ T+2.5 ({t_info['status_label']}). "
+                f"Thời điểm khả dụng: {t_info['settlement_desc']}"
+            )
+            return None
+
         symbol = pos["symbol"]
         shares = pos["shares"]
         cost = pos["cost_basis"]
@@ -444,7 +483,7 @@ def sell_stock(position_id: int, current_price: float, reason: str = "TAKE_PROFI
         cursor.execute("SELECT cash_balance FROM portfolio_account WHERE id = 1")
         current_cash = float(cursor.fetchone()[0])
         new_cash = current_cash + sell_val
-        now_str = datetime.now(VIETNAM_TZ).strftime("%d/%m/%Y %H:%M")
+        now_str = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         cursor.execute("UPDATE portfolio_account SET cash_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1", (new_cash,))
         cursor.execute("""

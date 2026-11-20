@@ -96,29 +96,42 @@ async def execute_pending_orders(bot: Bot) -> int:
                     db.mark_order_cancelled(order_id, "Không đủ điều kiện mua thêm")
 
             elif action == "SELL_PARTIAL":
-                sell_res = portfolio_manager.sell_partial_stock(
-                    symbol=sym,
-                    sell_ratio=0.5,
-                    current_price=current_price,
-                    note=f"Khớp Bán bớt đầu phiên {session_name} từ lệnh chờ #{order_id}"
-                )
-                if sell_res:
-                    db.mark_order_executed(order_id, current_price, sell_res["sell_shares"])
-                    executed_items.append({
-                        "symbol": sym,
-                        "action": "Bán bớt 50%",
-                        "shares": sell_res["sell_shares"],
-                        "price": current_price,
-                        "cost": sell_res["sell_val"],
-                        "pnl": sell_res["pnl_amount"]
-                    })
-                else:
+                pos = portfolio_manager.get_open_position_by_symbol(sym)
+                if not pos:
                     db.mark_order_cancelled(order_id, "Không tìm thấy vị thế để bán bớt")
+                else:
+                    t_info = holiday_checker.calculate_t_plus_status(pos.get("buy_date", ""))
+                    if not t_info["is_available"]:
+                        logger.info(f"Lệnh chờ Bán bớt #{sym} (Đơn #{order_id}) chưa thể khớp do chưa đủ T+2.5 ({t_info['status_label']}). Khả dụng: {t_info['settlement_desc']}. Giữ nguyên lệnh chờ.")
+                        continue
+                    sell_res = portfolio_manager.sell_partial_stock(
+                        symbol=sym,
+                        sell_ratio=0.5,
+                        current_price=current_price,
+                        note=f"Khớp Bán bớt đầu phiên {session_name} từ lệnh chờ #{order_id}"
+                    )
+                    if sell_res:
+                        db.mark_order_executed(order_id, current_price, sell_res["sell_shares"])
+                        executed_items.append({
+                            "symbol": sym,
+                            "action": "Bán bớt 50%",
+                            "shares": sell_res["sell_shares"],
+                            "price": current_price,
+                            "cost": sell_res["sell_val"],
+                            "pnl": sell_res["pnl_amount"]
+                        })
+                    else:
+                        db.mark_order_cancelled(order_id, "Không đủ điều kiện bán bớt")
 
             elif action == "SELL_FULL":
-                positions = portfolio_manager.get_open_positions()
-                pos = next((p for p in positions if p["symbol"] == sym), None)
-                if pos:
+                pos = portfolio_manager.get_open_position_by_symbol(sym)
+                if not pos:
+                    db.mark_order_cancelled(order_id, "Vị thế không tồn tại")
+                else:
+                    t_info = holiday_checker.calculate_t_plus_status(pos.get("buy_date", ""))
+                    if not t_info["is_available"]:
+                        logger.info(f"Lệnh chờ Bán toàn phần #{sym} (Đơn #{order_id}) chưa thể khớp do chưa đủ T+2.5 ({t_info['status_label']}). Khả dụng: {t_info['settlement_desc']}. Giữ nguyên lệnh chờ.")
+                        continue
                     sell_res = portfolio_manager.sell_stock(
                         pos["id"],
                         current_price,
@@ -134,8 +147,6 @@ async def execute_pending_orders(bot: Bot) -> int:
                             "cost": sell_res["sell_value"],
                             "pnl": sell_res["pnl_amount"]
                         })
-                else:
-                    db.mark_order_cancelled(order_id, "Vị thế không tồn tại")
 
         except Exception as e:
             logger.error(f"Lỗi khi khớp lệnh chờ #{order_id} ({sym}): {e}")

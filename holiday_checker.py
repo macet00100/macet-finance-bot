@@ -1,5 +1,5 @@
-from datetime import datetime, date
-from typing import Optional, Set
+from datetime import datetime, date, timedelta
+from typing import Optional, Set, Union, Any, Tuple, Dict
 from zoneinfo import ZoneInfo
 
 VIETNAM_TZ = ZoneInfo("Asia/Bangkok")
@@ -145,3 +145,142 @@ def get_next_trading_session_desc(dt: Optional[datetime] = None) -> str:
         return "Phiên Sáng ngày mai (09:00)"
 
     return "Phiên giao dịch tiếp theo (09:00)"
+
+def parse_vietnam_datetime(val: Any) -> datetime:
+    """Chuyển đổi linh hoạt nhiều định dạng ngày/giờ sang datetime có timezone Asia/Bangkok"""
+    if isinstance(val, datetime):
+        return val.astimezone(VIETNAM_TZ) if val.tzinfo else val.replace(tzinfo=VIETNAM_TZ)
+    if isinstance(val, date):
+        return datetime(val.year, val.month, val.day, tzinfo=VIETNAM_TZ)
+    
+    val_str = str(val).strip()
+    formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+        "%Y-%m-%d",
+        "%d/%m/%Y"
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(val_str, fmt).replace(tzinfo=VIETNAM_TZ)
+        except ValueError:
+            pass
+    return datetime.now(VIETNAM_TZ)
+
+def get_next_trading_day(d: date) -> date:
+    """Tìm ngày giao dịch tiếp theo sau ngày d"""
+    cur = d + timedelta(days=1)
+    while not is_vietnam_trading_day(datetime(cur.year, cur.month, cur.day, tzinfo=VIETNAM_TZ)):
+        cur += timedelta(days=1)
+    return cur
+
+def get_settlement_trading_day(buy_date_val: Any) -> Tuple[date, str]:
+    """
+    Xác định ngày T+2 (ngày về tài khoản chiều 13:00) theo chu kỳ T+2.5:
+    - Nếu mua trong phiên giao dịch (hoặc trước 15:00 ngày giao dịch): Ngày T0 là ngày mua.
+    - Nếu mua ngoài giờ (sau 15:00 hoặc ngày nghỉ): Ngày T0 là ngày giao dịch tiếp theo.
+    - Ngày T+1: Ngày giao dịch thứ 1 sau T0.
+    - Ngày T+2: Ngày giao dịch thứ 2 sau T0 (Khả dụng lúc 13:00).
+    """
+    buy_dt = parse_vietnam_datetime(buy_date_val)
+    buy_d = buy_dt.date()
+    
+    # Xác định ngày khớp T0
+    if is_vietnam_trading_day(buy_dt) and buy_dt.hour < 15:
+        t0_date = buy_d
+    else:
+        t0_date = get_next_trading_day(buy_d) if buy_dt.hour >= 15 or not is_vietnam_trading_day(buy_dt) else buy_d
+    
+    t1_date = get_next_trading_day(t0_date)
+    t2_date = get_next_trading_day(t1_date)
+    
+    desc = f"{t2_date.strftime('%d/%m/%Y')} (Phiên Chiều từ 13:00)"
+    return t2_date, desc
+
+def calculate_t_plus_status(buy_date_val: Any, current_dt: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    Tính toán trạng thái chu kỳ T+ của sàn chứng khoán Việt Nam (Quy chế T+2.5):
+    - Chu kỳ T tính theo các NGÀY GIAO DỊCH THỰC TẾ (bỏ qua Thứ Bảy, Chủ Nhật và ngày Lễ/Tết).
+    - Ngày mua: T+0 (Chưa khả dụng)
+    - 1 ngày giao dịch sau ngày mua: T+1 (Chưa khả dụng)
+    - 2 ngày giao dịch sau ngày mua:
+      + Trước 13:00 (Phiên Sáng & Nghỉ trưa): T+2 Sáng (Chưa khả dụng - Chờ về)
+      + Từ 13:00 trở đi (Phiên Chiều): T+2.5 (KHẢ DỤNG GIAO DỊCH - Bắt đầu được bán)
+    - Từ ngày giao dịch thứ 3 trở đi: Đã đủ T+ (KHẢ DỤNG GIAO DỊCH)
+    """
+    if current_dt is None:
+        current_dt = datetime.now(VIETNAM_TZ)
+    elif current_dt.tzinfo is None:
+        current_dt = current_dt.replace(tzinfo=VIETNAM_TZ)
+    else:
+        current_dt = current_dt.astimezone(VIETNAM_TZ)
+
+    buy_dt = parse_vietnam_datetime(buy_date_val)
+    t2_date, t2_desc = get_settlement_trading_day(buy_date_val)
+    curr_d = current_dt.date()
+
+    buy_d = buy_dt.date()
+    if is_vietnam_trading_day(buy_dt) and buy_dt.hour < 15:
+        t0_date = buy_d
+    else:
+        t0_date = get_next_trading_day(buy_d) if buy_dt.hour >= 15 or not is_vietnam_trading_day(buy_dt) else buy_d
+
+    if curr_d < t0_date:
+        t_days = 0
+    else:
+        t_days = 0
+        cur = t0_date + timedelta(days=1)
+        while cur <= curr_d:
+            if is_vietnam_trading_day(datetime(cur.year, cur.month, cur.day, tzinfo=VIETNAM_TZ)):
+                t_days += 1
+            cur += timedelta(days=1)
+
+    if t_days == 0:
+        return {
+            "t_days": 0,
+            "is_available": False,
+            "status_code": "T0",
+            "status_label": "Chờ về (T+0)",
+            "badge": "⏳ T+0",
+            "settlement_desc": t2_desc
+        }
+    elif t_days == 1:
+        return {
+            "t_days": 1,
+            "is_available": False,
+            "status_code": "T1",
+            "status_label": "Chờ về (T+1)",
+            "badge": "⏳ T+1",
+            "settlement_desc": t2_desc
+        }
+    elif t_days == 2:
+        if curr_d == t2_date and current_dt.hour < 13:
+            return {
+                "t_days": 2,
+                "is_available": False,
+                "status_code": "T2_MORNING",
+                "status_label": "Chờ về (T+2 Sáng)",
+                "badge": "⏳ T+2 Sáng",
+                "settlement_desc": t2_desc
+            }
+        else:
+            return {
+                "t_days": 2,
+                "is_available": True,
+                "status_code": "T2_AFTERNOON",
+                "status_label": "Khả dụng (T+2.5)",
+                "badge": "✅ Khả dụng",
+                "settlement_desc": "Đã về tài khoản"
+            }
+    else:
+        return {
+            "t_days": t_days,
+            "is_available": True,
+            "status_code": "READY",
+            "status_label": "Khả dụng",
+            "badge": "✅ Khả dụng",
+            "settlement_desc": "Đã về tài khoản"
+        }
+

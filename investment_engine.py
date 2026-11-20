@@ -115,8 +115,24 @@ def make_investment_decision(
         curr_val = holding_pos["current_value"]
         pos_weight = (curr_val / total_assets) * 100.0 if total_assets > 0 else 0
 
+        # Kiểm tra trạng thái chu kỳ T+2.5 của cổ phiếu đang nắm giữ
+        t_info = holiday_checker.calculate_t_plus_status(holding_pos.get("buy_date", ""))
+        is_avail = t_info["is_available"]
+
         # A. Cắt lỗ toàn phần khẩn cấp: Tin tức rất tiêu cực
         if "TIÊU CỰC" in impact.upper() and "LỚN" in magnitude.upper():
+            if not is_avail:
+                decision_line = (
+                    f"💼 **Quyết định (Quản trị T+):** THEO DÕI CHẶT **#{leader_ticker}** - Tin tức tiêu cực lớn, nhưng cổ phiếu hiện đang ở trạng thái "
+                    f"**{t_info['status_label']}** (Dự kiến khả dụng: `{t_info['settlement_desc']}`). Theo quy chế T+2.5 của sàn, chưa thể bán ngay. "
+                    f"Hệ thống đưa vào diện cảnh báo ưu tiên xử lý khi hàng về tài khoản."
+                )
+                assets_line = (
+                    f"💰 **Tổng tài sản:** `{summary['total_assets']:,.0f} VNĐ` "
+                    f"(Tiền mặt: `{summary['cash_balance']:,.0f} VNĐ` | Cổ phiếu: `{summary['stock_value']:,.0f} VNĐ`)"
+                )
+                return decision_line, assets_line
+
             if is_open:
                 sell_res = portfolio_manager.sell_stock(pos_id, current_price, reason=f"CẮT LỖ KHẨN CẤP ({session_name})")
                 new_summary = portfolio_manager.get_portfolio_summary()
@@ -148,6 +164,18 @@ def make_investment_decision(
         )
 
         if should_sell_partial and shares >= 200:
+            if not is_avail:
+                decision_line = (
+                    f"💼 **Quyết định (Chờ T+2.5):** THEO DÕI CHỐT LỜI **#{leader_ticker}** - Đạt điều kiện hạ tỷ trọng (PnL: `{pnl_pct:+.2f}%`), "
+                    f"nhưng cổ phiếu đang ở trạng thái **{t_info['status_label']}** (Dự kiến khả dụng: `{t_info['settlement_desc']}`). "
+                    f"Chờ cổ phiếu về tài khoản để hiện thực hóa lợi nhuận."
+                )
+                assets_line = (
+                    f"💰 **Tổng tài sản:** `{summary['total_assets']:,.0f} VNĐ` "
+                    f"(Tiền mặt: `{summary['cash_balance']:,.0f} VNĐ` | Cổ phiếu: `{summary['stock_value']:,.0f} VNĐ`)"
+                )
+                return decision_line, assets_line
+
             if is_open:
                 sell_res = portfolio_manager.sell_partial_stock(
                     symbol=leader_ticker,
@@ -236,9 +264,10 @@ def make_investment_decision(
                 return decision_line, assets_line
 
         # D. Tiếp tục nắm giữ
+        t_tag = f" | {t_info['badge']} (Khả dụng: {t_info['settlement_desc']})" if not is_avail else ""
         decision_line = (
             f"💼 **Quyết định:** TIẾP TỤC NẮM GIỮ **#{leader_ticker}** - `{shares:,} cp` (`{pos_weight:.1f}% tài sản`, "
-            f"Lãi/Lỗ: `{holding_pos['pnl_amount']:+,.0f} VNĐ` / `{pnl_pct:+.2f}%`), Chốt lãi mục tiêu: `{tp_price:,.2f}` / "
+            f"Lãi/Lỗ: `{holding_pos['pnl_amount']:+,.0f} VNĐ` / `{pnl_pct:+.2f}%`{t_tag}), Chốt lãi mục tiêu: `{tp_price:,.2f}` / "
             f"Cắt lỗ: `{sl_price:,.2f}`, theo dõi thêm."
         )
         assets_line = (
